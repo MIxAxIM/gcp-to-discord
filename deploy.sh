@@ -2,11 +2,11 @@
 
 set +e
 
-gcloud functions deploy stackdriver-to-discord \
+gcloud functions deploy gcp-to-discord \
     --entry-point=F \
-    --memory=128MB \
+    --memory=256MB \
     --region=us-central1 \
-    --runtime=go113 \
-    --env-vars-file=.env.yaml \
+    --runtime=go123 \
+    --env-vars-file=env.yaml \
     --trigger-http \
     --timeout=10s
