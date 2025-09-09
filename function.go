@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+const (
+	colorGreen = 3066993  // Green for resolved incidents
+	colorRed   = 15158332 // Red for open incidents
+	colorGrey  = 9807270  // Grey for unknown/default
+)
+
 type Notification struct {
 	Incident Incident `json:"incident"`
 	Version  string   `json:"version"`
@@ -29,8 +35,7 @@ type Incident struct {
 }
 
 type DiscordWebhook struct {
-	Content string  `json:"content"`
-	Embeds  []Embed `json:"embeds,omitempty"`
+	Embeds []Embed `json:"embeds,omitempty"`
 }
 
 type Embed struct {
@@ -69,37 +74,39 @@ func toDiscord(notification Notification) DiscordWebhook {
 		conditionName = "-"
 	}
 
-	colour := 1609983
+	colour := colorGrey
 	if notification.Incident.State == "open" {
-		colour = 16065069
+		colour = colorRed
+	} else if notification.Incident.State == "closed" {
+		colour = colorGreen
 	}
 
 	return DiscordWebhook{
 		Embeds: []Embed{
-			Embed{
+			{
 				Title: notification.Incident.Summary,
 				URL:   notification.Incident.URL,
 				Color: colour,
 				Fields: []Field{
-					Field{
+					{
 						Name:  "Incident ID",
 						Value: notification.Incident.IncidentID,
 					},
-					Field{
+					{
 						Name:   "Policy",
 						Value:  policyName,
 						Inline: true,
 					},
-					Field{
+					{
 						Name:   "Condition",
 						Value:  conditionName,
 						Inline: true,
 					},
-					Field{
+					{
 						Name:  "Started At",
 						Value: startedAt,
 					},
-					Field{
+					{
 						Name:  "Ended At",
 						Value: endedAt,
 					},
@@ -109,56 +116,75 @@ func toDiscord(notification Notification) DiscordWebhook {
 	}
 }
 
-func F(w http.ResponseWriter, r *http.Request) {
-	authToken := os.Getenv("AUTH_TOKEN")
-	if authToken == "" {
-		log.Fatalln("`AUTH_TOKEN` is not set in the environment")
-	}
+var (
+	authToken         = os.Getenv("AUTH_TOKEN")
+	discordWebhookURL = os.Getenv("DISCORD_WEBHOOK_URL")
+	// httpClient is a shared HTTP client for making requests to Discord.
+	// It has a timeout to prevent requests from hanging indefinitely.
+	httpClient = &http.Client{Timeout: 10 * time.Second}
+)
 
-	if r.URL.Query().Get("auth_token") != authToken {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("invalid request"))
+func F(w http.ResponseWriter, r *http.Request) {
+	if authToken == "" {
+		log.Printf("Error: `AUTH_TOKEN` is not set in the environment")
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
-	discordWebhookURL := os.Getenv("DISCORD_WEBHOOK_URL")
+	if r.URL.Query().Get("auth_token") != authToken {
+		log.Printf("Error: Invalid auth_token provided")
+		http.Error(w, "Invalid Request", http.StatusBadRequest)
+		return
+	}
+
 	if discordWebhookURL == "" {
-		log.Fatalln("`DISCORD_WEBHOOK_URL` is not set in the environment")
+		log.Printf("Error: `DISCORD_WEBHOOK_URL` is not set in the environment")
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 
 	if _, err := url.Parse(discordWebhookURL); err != nil {
-		log.Fatalln(err)
+		log.Printf("Error parsing DISCORD_WEBHOOK_URL: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 
 	if r.Method != "POST" || r.Header.Get("Content-Type") != "application/json" {
-		w.WriteHeader(http.StatusBadRequest)
-		w.Write([]byte("invalid request"))
+		log.Printf("Error: Invalid request method or content type. Method: %s, Content-Type: %s", r.Method, r.Header.Get("Content-Type"))
+		http.Error(w, "Invalid Request", http.StatusBadRequest)
 		return
 	}
 
 	var notification Notification
 	if err := json.NewDecoder(r.Body).Decode(&notification); err != nil {
-		log.Fatalln(err)
+		log.Printf("Error decoding notification payload: %v", err)
+		http.Error(w, "Bad Request", http.StatusBadRequest)
+		return
 	}
 
 	discordWebhook := toDiscord(notification)
 
 	payload, err := json.Marshal(discordWebhook)
 	if err != nil {
-		log.Fatalln(err)
+		log.Printf("Error marshalling Discord webhook payload: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 
 	res, err := http.Post(discordWebhookURL, "application/json", bytes.NewBuffer(payload))
 	if err != nil {
-		log.Fatalln(err)
+		log.Printf("Error sending webhook to Discord: %v", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 	defer res.Body.Close()
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		log.Println("payload", string(payload))
-		log.Fatalln("unexpected status code", res.StatusCode)
+		log.Printf("Error: Unexpected status code from Discord: %d, payload: %s", res.StatusCode, string(payload))
+		http.Error(w, "Failed to send to Discord", http.StatusBadGateway)
+		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(discordWebhook)
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
 }
